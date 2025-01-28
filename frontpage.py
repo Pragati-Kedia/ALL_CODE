@@ -1,27 +1,36 @@
 import os
 import time
-import shutil
 import pandas as pd
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from consolidated_xml_to_excel import process_xml_files  # Import the function to convert XML to Excel
+from datetime import datetime
 
 # Define the folder path where you want to save the XML files (already existing folder)
-save_folder = r"D:\Consolidated_xml_file\xml"  # Folder where XML files will be saved
-
+save_folder = r"D:\FinancialStatementAnalysis\01ETL\extracted"  # Base folder where XML files will be saved
+log_path = r"D:\FinancialStatementAnalysis\04log"
 # Load the Excel Sheet for Security Codes and Symbols
-file_path = r"D:\Consolidated_xml_file\Samples500_v2.xlsx"  # Path to your Excel file
+file_path = r"D:\FinancialStatementAnalysis\03input\Samples500_v2.xlsx"  # Path to your Excel file
 df = pd.read_excel(file_path)
 
-def save_xml(symbol, period_value, xml_content, serial):
+# Define log file name and path
+today_date = datetime.now().strftime("%Y-%m-%d")
+log_file_path = os.path.join(log_path, f"frontpage_{today_date}.xlsx")
+log_data = []  # To store log information
+
+def save_xml(symbol, period_value, xml_content, sr_no):
     """
     Save the extracted XML content to a file and move it to the corresponding symbol folder.
     """
+    # Construct folder name based on Symbol and Sr No
+    folder_name = f"{sr_no}_{symbol}"
+    symbol_folder_path = os.path.join(save_folder, folder_name)
+    os.makedirs(symbol_folder_path, exist_ok=True)  # Ensure the folder exists before saving
+
     # Generate the filename for the XML file using Symbol and Period
-    xml_filename = os.path.join(save_folder, f"{symbol}_{period_value}.xml")
+    xml_filename = os.path.join(symbol_folder_path, f"{symbol}_{period_value}.xml")
 
     # Save the XML content to the file
     with open(xml_filename, "w", encoding="utf-8") as file:
@@ -29,34 +38,13 @@ def save_xml(symbol, period_value, xml_content, serial):
 
     print(f"XML data for {symbol} saved as {xml_filename}")
 
-    # Construct folder names
-    symbol_folder_name = f"{serial}_{symbol}_XMLS_Processed"
-    excel_folder_name = f"{serial}_{symbol}_Converted_Excels"
-    
-    # Define the paths for these folders
-    symbol_folder_path = os.path.join(r"D:\Consolidated_xml_file\exceloutput", symbol_folder_name)
-    excel_folder_path = os.path.join(r"D:\Consolidated_xml_file\exceloutput", excel_folder_name)
-
-    # Check if both folders exist before moving and processing
-    if os.path.isdir(symbol_folder_path) and os.path.isdir(excel_folder_path):
-        # Move the XML file to the appropriate symbol folder
-        shutil.move(xml_filename, symbol_folder_path)
-        print(f"Moved XML file to {symbol_folder_path}")
-
-        # Process the XML file into Excel and save it in the Converted_Excels folder
-        try:
-            process_xml_files(
-                xml_download_dir=symbol_folder_path,  # Using symbol folder as download dir
-                excel_save_dir=excel_folder_path,     # Save the Excel file in the Converted_Excels folder
-                Processed_XMLs_folder=symbol_folder_path,  # Processed XMLs folder
-                Stock_Symbol=symbol
-            )
-            print(f"Converted XML to Excel and saved in {excel_folder_path}")
-        except Exception as e:
-            print(f"Error processing XML to Excel for {symbol}: {e}")
-    else:
-        print(f"Skipping {symbol}: Required folders do not exist for XML or Excel.")
-
+def save_log_file():
+    """
+    Save the log data to an Excel file.
+    """
+    log_df = pd.DataFrame(log_data, columns=["Sr. No.", "Symbol", "Period", "Status"])
+    log_df.to_excel(log_file_path, index=False)
+    print(f"Log file saved at {log_file_path}")
 
 def XML_extraction(driver):
     """
@@ -64,7 +52,7 @@ def XML_extraction(driver):
     """
     try:
         # Find all rows in the table
-        rows = driver.find_elements(By.XPATH, "//*[@id='ContentPlaceHolder1_gvData']/tbody/tr")  # Get all rows in the table
+        rows = driver.find_elements(By.XPATH, "//*[@id='ContentPlaceHolder1_gvData']/tbody/tr")
         time.sleep(1)
 
         for i, row in enumerate(rows):
@@ -82,6 +70,7 @@ def XML_extraction(driver):
                     time.sleep(2)
                 except Exception as e:
                     print(f"No XML link found in row {i}. Error: {str(e)}")
+                    log_data.append(["N/A", "N/A", period_value, "No XML link found"])
                     continue  # Skip this row if the XML link is missing
 
                 driver.switch_to.window(driver.window_handles[-1])  # Switch to the new window that opens
@@ -96,21 +85,25 @@ def XML_extraction(driver):
 
                     # Match the symbol using the security code from the Excel sheet
                     symbol = None  # Default to None if no match is found
+                    sr_no = None
                     for index, excel_row in df.iterrows():
                         if str(excel_row['Security Code']) == security_code:
                             symbol = excel_row['Symbol']  # Get Symbol from the matching row in the Excel sheet
-                            serial = str(excel_row['Sr. No.'])  # Extract Serial Number
+                            sr_no = str(excel_row['Sr. No.'])  # Extract Sr No
                             break
 
                     # Proceed only if the symbol is found
                     if symbol:
                         # Save the XML file and move it to the correct folder
-                        save_xml(symbol, period_value, xml_content, serial)
+                        save_xml(symbol, period_value, xml_content, sr_no)
+                        log_data.append([sr_no, symbol, period_value, "Success"])
                     else:
                         print(f"No matching Symbol found for Security Code {security_code} in Excel sheet.")
+                        log_data.append(["N/A", "N/A", period_value, "No matching Symbol found"])
 
                 except Exception as e:
                     print(f"Error occurred while extracting XML content for {security_code}: {str(e)}")
+                    log_data.append(["N/A", "N/A", period_value, "XML content extraction error"])
 
                 driver.close()  # Close the current window
                 driver.switch_to.window(driver.window_handles[0])  # Switch back to the main window
@@ -118,6 +111,7 @@ def XML_extraction(driver):
 
             except Exception as e:
                 print(f"Error occurred in row {i}: {str(e)}")
+                log_data.append(["N/A", "N/A", "N/A", f"Row error: {str(e)}"])
 
     except Exception as e:
         print(f"Error occurred during XML extraction: {str(e)}")
@@ -145,6 +139,9 @@ def main():
         XML_extraction(driver)
 
     finally:
+        # Save the log file
+        save_log_file()
+
         # Close the WebDriver after extraction is complete
         driver.quit()
 
