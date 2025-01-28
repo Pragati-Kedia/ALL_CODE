@@ -14,6 +14,7 @@ from selenium.webdriver.support.ui import Select
 options = Options()
 options.add_argument("--start-maximized")
 options.add_argument("--headless")  # If you want to see browser interactions, comment this line
+
 # Initialize a list to hold log data
 log_data = []
 
@@ -26,14 +27,35 @@ def log_message(stock_name, file_name, url, status, error_line=None):
         "Error Line": error_line
     })
 
+def XML_extraction_with_retry(sr_no, row_number, security_code, stock_name, save_folder, max_retries=5):
+    retry_count = 0
+    success = False
+
+    while retry_count < max_retries and not success:
+        retry_count += 1
+        print(f"Attempt {retry_count} for {stock_name}")
+        success = XML_extraction(sr_no, row_number, security_code, stock_name, save_folder)
+
+        if not success:
+            wait_time = 2 ** retry_count  # Exponential backoff: 2, 4, 8, 16, ...
+            print(f"Retry {retry_count} for {stock_name} failed. Retrying in {wait_time} seconds...")
+            time.sleep(wait_time)
+
+    if not success:
+        print(f"All {max_retries} attempts failed for {stock_name}. Moving to the next company.")
+
+# Main function usage remains the same
+
+
 def XML_extraction(sr_no, row_number, security_code, stock_name, save_folder):
     Top_URL = "https://www.bseindia.com/corporates/Comp_Resultsnew.aspx"
     driver = webdriver.Chrome(options=options)
     driver.get(Top_URL)
-    print(stock_name)
 
     try:
-        Security_Search = WebDriverWait(driver, 10).until(EC.visibility_of_element_located((By.ID, "ContentPlaceHolder1_SmartSearch_smartSearch")))
+        Security_Search = WebDriverWait(driver, 10).until(
+            EC.visibility_of_element_located((By.ID, "ContentPlaceHolder1_SmartSearch_smartSearch"))
+        )
         Security_Search.clear()
         Security_Search.send_keys(security_code)
 
@@ -51,6 +73,8 @@ def XML_extraction(sr_no, row_number, security_code, stock_name, save_folder):
         File_Name_rows = driver.find_elements(By.XPATH, f"//td[text()='{security_code}']/following-sibling::td[3]//a")
         time.sleep(1)
 
+        success_count = 0
+
         for i in range(len(rows)):
             link = rows[i]
             File_Name = File_Name_rows[i].text
@@ -67,7 +91,9 @@ def XML_extraction(sr_no, row_number, security_code, stock_name, save_folder):
 
             try:
                 # Extract the XML content directly
-                xml_div = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, 'webkit-xml-viewer-source-xml')))
+                xml_div = WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.ID, 'webkit-xml-viewer-source-xml'))
+                )
                 xml_content = xml_div.get_attribute('innerHTML')  # Extract the XML content
 
                 # Save XML content
@@ -76,6 +102,7 @@ def XML_extraction(sr_no, row_number, security_code, stock_name, save_folder):
 
                 # Log success
                 log_message(stock_name, File_Name, current_url, "Success")
+                success_count += 1
 
             except Exception as e:
                 # Get the traceback to identify the error line number
@@ -92,6 +119,8 @@ def XML_extraction(sr_no, row_number, security_code, stock_name, save_folder):
             driver.switch_to.window(driver.window_handles[0])
             time.sleep(1)
 
+        return success_count > 0  # Return True if at least one file is successfully downloaded
+
     except Exception as e:
         tb_str = traceback.format_exc()
         error_line = 'Unknown'
@@ -101,6 +130,7 @@ def XML_extraction(sr_no, row_number, security_code, stock_name, save_folder):
                 break
         log_message(stock_name, "N/A", Top_URL, "Extraction Failed", error_line)
         print(f"Error occurred during XML extraction for {stock_name}: {str(e)}")
+        return False  # Indicate failure for the entire company
 
     finally:
         driver.quit()
@@ -123,10 +153,10 @@ else:
 
     # Base path for saving XML files
     base_path = r"D:\Consolidated_xml_file\xml"
-   
+
     # Using the Excel row number for saving files
     for row_number, (index, row) in enumerate(df_range.iterrows(), start=start_row):
-        sr_no = str(row['Sr. No.'])# Extract the Sr. No. from the input file
+        sr_no = str(row['Sr. No.'])  # Extract the Sr. No. from the input file
         security_code = str(row['Security Code'])
         stock_name = str(row['Symbol'])
 
@@ -136,7 +166,7 @@ else:
         os.makedirs(Save_Folder, exist_ok=True)
 
         # Pass the row number from Excel to the XML extraction function
-        XML_extraction(sr_no, row_number, security_code, stock_name, Save_Folder)
+        XML_extraction_with_retry(sr_no, row_number, security_code, stock_name, Save_Folder)
 
     # Save the log data to an Excel file
     base_log_path = r"D:\Consolidated_xml_file\log"
