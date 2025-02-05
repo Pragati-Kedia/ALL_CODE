@@ -41,24 +41,43 @@ def extract_financial_year_from_context(root):
         return f"{year}"
     return 'Unknown'
  
+        
 def extract_quarter_from_context(root):
-    """Extract Quarter based on the Element Name 'DateOfStartOfReportingPeriod'."""
+    """Extract Quarter based on both 'DateOfStartOfReportingPeriod' and 'DateOfEndOfReportingPeriod'."""
     start_date_row = next((elem for elem in root.iter() if etree.QName(elem).localname == "DateOfStartOfReportingPeriod"), None)
-    if start_date_row is not None:
-        date_value = start_date_row.text.strip()
-        month = datetime.strptime(date_value, "%Y-%m-%d").month
-        if 1 <= month <= 3:
-            return '04'
-        elif 4 <= month <= 6:
-            return '01'
-        elif 7 <= month <= 9:
-            return '02'
-        elif 10 <= month <= 12:
-            return '03'
-    return 'Unknown'
+    end_date_row = next((elem for elem in root.iter() if etree.QName(elem).localname == "DateOfEndOfReportingPeriod"), None)
+   
+    if start_date_row is not None and end_date_row is not None:
+        start_date_value = start_date_row.text.strip()
+        end_date_value = end_date_row.text.strip()
+       
+        start_month = datetime.strptime(start_date_value, "%Y-%m-%d").month
+        end_month = datetime.strptime(end_date_value, "%Y-%m-%d").month
+       
+        def get_quarter(month):
+            if 1 <= month <= 3:
+                return '04'
+            elif 4 <= month <= 6:
+                return '01'
+            elif 7 <= month <= 9:
+                return '02'
+            elif 10 <= month <= 12:
+                return '03'
+            return 'Unknown'
+       
+        start_quarter = get_quarter(start_month)
+        end_quarter = get_quarter(end_month)
+       
+        # Ensure both quarters match, otherwise raise an error
+        if start_quarter != end_quarter:
+            raise ValueError(f"Mismatched quarters: Start {start_quarter}, End {end_quarter}")
+       
+        return start_quarter  # or end_quarter, as they should be the same
+   
+    raise ValueError("Missing required period start or end date in XML")
  
 def extract_all_data(root):
-    """Extract all data from the XML, including the new columns."""
+    """Extract all data from the XML, including the new 'Nature Of Report' column."""
     all_data = []
    
     # Extract existing data (financial year, quarter)
@@ -67,14 +86,20 @@ def extract_all_data(root):
     quarter = extract_quarter_from_context(root)
  
     # Extract Period Start and Period End Dates from the XML
- 
     period_start_date_row = next((elem for elem in root.iter() if etree.QName(elem).localname == "DateOfStartOfReportingPeriod"), None)
     period_end_date_row = next((elem for elem in root.iter() if etree.QName(elem).localname == "DateOfEndOfReportingPeriod"), None)
  
     # Set Period Start and Period End Dates, default to 'Unknown' if not found
     period_start_date = period_start_date_row.text.strip() if period_start_date_row is not None else 'Unknown'
     period_end_date = period_end_date_row.text.strip() if period_end_date_row is not None else 'Unknown'
- 
+    
+    # Extract the "Nature Of Report" from the element "NatureOfReporStandaloneConsolidated"
+    nature_of_report = None
+    for elem in root.iter():
+        if etree.QName(elem).localname == "NatureOfReportStandaloneConsolidated":
+            nature_of_report = elem.text.strip() if elem.text else 'Unknown'
+            break
+
     # Iterate over all elements in the XML and extract necessary data
     for elem in root.iter():
         tag = etree.QName(elem).localname  # Handle namespace if present
@@ -82,7 +107,7 @@ def extract_all_data(root):
         context_ref = elem.get('contextRef', 'OneD')  # Default to 'OneD' if contextRef is missing
         decimals = elem.get('decimals', '')  # Include Decimals if present
         fact_value = value
- 
+        
         all_data.append({
             'Company Code': scrip_code,
             'Financial Year': financial_year,
@@ -93,11 +118,11 @@ def extract_all_data(root):
             'Decimal': decimals,  # Rename ContextRef to Unit
             'Period Start Date': period_start_date,  # Add Period Start Date
             'Period End Date': period_end_date,      # Add Period End Date
+            'Nature Of Report': nature_of_report  # Add Nature Of Report column
         })
    
     return all_data
- 
- 
+
  
 def convert_to_dataframe(data):
     """Convert extracted data to a pandas DataFrame."""
@@ -117,9 +142,9 @@ def XML_edit(filepath):
     tree = ET.ElementTree(root)
     tree.write(file_path)
     return file_path
- 
+
 def process_xml_files(xml_download_dir, excel_save_dir, Processed_XMLs_folder, Stock_Symbol):
-    """Process all XML files in the XML download directory and save them to Excel."""
+    """Process all XML files in the XML download directory and save them to Excel.""" 
     global log_df
     for root_dir, _, files in os.walk(xml_download_dir):
         for file_name in files:
@@ -134,7 +159,7 @@ def process_xml_files(xml_download_dir, excel_save_dir, Processed_XMLs_folder, S
  
                     # Extract Period Start Date and Period End Date for Excel file naming
                     period_start_date_row = all_data_df[(all_data_df["Element Name"] == "DateOfStartOfReportingPeriod")]
-                    period_end_date_row = all_data_df[(all_data_df["Element Name"] == "DateOfEndOfReportingPeriod")]
+                    period_end_date_row = all_data_df[(all_data_df["Element Name"] == "DateOfEndOfReportingPeriod")] 
  
                     period_start_date = period_start_date_row["Value"].values[0] if not period_start_date_row.empty else 'UNKNOWN_START_DATE'
                     period_end_date = period_end_date_row["Value"].values[0] if not period_end_date_row.empty else 'UNKNOWN_END_DATE'
@@ -173,14 +198,14 @@ def replace_year_quarter_prefix(file_name, new_prefix):
     import re
     pattern = r'^\d{4}-\d{4}_Q\d_'
     return re.sub(pattern, f"{new_prefix}_", file_name)
-
-# Define paths
-Input_Folder_path = Path(r"D:\FinancialStatementAnalysis\01ETL\extracted")
-Output_Folder_Path = Path(r"D:\FinancialStatementAnalysis\01ETL\Transform")
-xml_folder_path = Path(r"D:\FinancialStatementAnalysis\01ETL\extracted\XMLS_Processed")
-Input_File = (r"D:\FinancialStatementAnalysis\03input\Taxonomy_LOS_61_to_100.xlsx")  
-Log_Folder_Path = Path(r"D:\FinancialStatementAnalysis\04log")  # Log folder path
  
+# Define paths
+Input_Folder_path = Path(r"D:\webpage\xml_excel")
+Output_Folder_Path = Path(r"D:\webpage\converted")
+xml_folder_path = Path(r"D:\webpage\xmls_processed")
+Input_File = (r"D:\webpage\Taxomy_LOS_For_Period 1_37.xlsx")  
+Log_Folder_Path = Path(r"D:\webpage\log")  # Log folder path
+
 # Create the log folder if it does not exist
 os.makedirs(Log_Folder_Path, exist_ok=True)
  
@@ -206,9 +231,9 @@ for index, row in df.iterrows():
             os.makedirs(Processed_XMLs_folder, exist_ok=True)
             os.makedirs(Converted_Excels_folder, exist_ok=True)
             process_xml_files(xml_directory, Converted_Excels_folder, Processed_XMLs_folder, current_folder)
- 
+
 # Save the log data to an Excel file in the log folder
-log_file_name = "xml_to_excel_61_to_100.xlsx"
+log_file_name = "xml_to_excel_51_to_100_.xlsx"
 log_file_path = os.path.join(Log_Folder_Path, log_file_name)
 log_df.to_excel(log_file_path, index=False)
 print('Process complete. Log file saved to:', log_file_path)
